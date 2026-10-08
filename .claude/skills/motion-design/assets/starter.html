@@ -1,0 +1,173 @@
+<!doctype html>
+<!--
+  Motion-design starter. Every pixel is a pure function of time t (seconds) via window.seek(t).
+  Render:   node scripts/render.mjs assets/starter.html out/film.mp4
+  Preview:  open in a browser; it autoplays with requestAnimationFrame. Add ?t=3.2 to freeze on a frame.
+
+  Replace the BRAND, DATA and the scenes in seek(). Keep the toolkit (ease tokens, prog, mix, lmix).
+  Demo film: "educationplanner", 8 s. Device = the task chip. Accent (teal) means "today".
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    --ink: #0E1419;      /* stage: ink-navy, not #000 */
+    --paper: #E8EEF2;    /* type */
+    --n1: #8696A3;       /* secondary type */
+    --n2: #26323C;       /* chip surface */
+    --n3: #33424E;       /* hairlines */
+    --accent: #2BC4A9;   /* one accent, one meaning: "today" */
+  }
+  html, body { margin: 0; background: var(--ink); overflow: hidden; }
+  #stage { position: relative; width: 1920px; height: 1080px; overflow: hidden; background: var(--ink);
+           font-family: "Inter", system-ui, sans-serif; font-feature-settings: "tnum" 1; }
+  #world { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; transform-origin: 0 0; }
+  .chip { position: absolute; left: 0; top: 0; width: 280px; height: 72px; border-radius: 14px;
+          background: var(--n2); box-shadow: 0 24px 80px rgba(0,0,0,.18), inset 0 1px 0 rgba(255,255,255,.08);
+          color: var(--paper); font-size: 26px; font-weight: 500; letter-spacing: -0.01em;
+          display: flex; align-items: center; padding: 0 22px; box-sizing: border-box; transform-origin: 0 0; }
+  .chip i { width: 10px; height: 10px; border-radius: 3px; background: var(--n1); margin-right: 16px; flex: none; }
+  .day { position: absolute; left: 0; top: 0; color: var(--n1); font-size: 24px; font-weight: 600;
+         letter-spacing: 0.02em; transform-origin: 0 0; }
+  .line { position: absolute; left: 0; top: 0; color: var(--paper); font-size: 96px; font-weight: 600;
+          letter-spacing: -0.045em; line-height: 1; white-space: nowrap; transform-origin: 0 0; }
+  .mask { position: absolute; overflow: hidden; left: 0; top: 0; }
+  .bar { position: absolute; left: 0; top: 0; height: 22px; border-radius: 6px; transform-origin: 0 0; }
+</style>
+</head>
+<body>
+<div id="stage"><div id="world"></div></div>
+<script>
+window.FILM = { width: 1920, height: 1080, fps: 60, duration: 8 };
+
+/* ---------- toolkit: house motion system (about 3 easing characters per film) ---------- */
+const bez = (x1, y1, x2, y2) => {
+  const A = (a, b) => 1 - 3 * b + 3 * a, B = (a, b) => 3 * b - 6 * a, C = (a) => 3 * a;
+  const f = (t, a, b) => ((A(a, b) * t + B(a, b)) * t + C(a)) * t;
+  const d = (t, a, b) => 3 * A(a, b) * t * t + 2 * B(a, b) * t + C(a);
+  return (x) => {
+    if (x <= 0) return 0; if (x >= 1) return 1;
+    let t = x;
+    for (let i = 0; i < 8; i++) { const s = d(t, x1, x2); if (Math.abs(s) < 1e-6) break; t -= (f(t, x1, x2) - x) / s; }
+    return f(t, y1, y2);
+  };
+};
+const E = {
+  out: bez(.16, 1, .3, 1),      // arrivals, reveals
+  inOut: bez(.87, 0, .13, 1),   // whips, lockup slides
+  cam: bez(.48, .1, 0, .9),     // camera: slow start, long settle
+  glide: bez(.47, .2, .15, 1),  // 150-350 px moves
+  exit: bez(.55, .055, .675, .19), // exits accelerate into the cut
+  smooth: bez(.65, 0, .35, 1),  // fades, drifts
+};
+const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const prog = (t, a, b, ease = (x) => x) => ease(clamp((t - a) / (b - a)));   // 0 before a, 1 after b
+const mix = (a, b, p) => a + (b - a) * p;
+const lmix = (a, b, p) => Math.exp(mix(Math.log(a), Math.log(b), p));      // scale/zoom in log space
+const rand = (seed) => { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); };
+const el = (cls, html, parent) => { const e = document.createElement("div"); e.className = cls; e.innerHTML = html; parent.appendChild(e); return e; };
+const put = (e, x, y, s = 1, r = 0, o = 1) => {   // all motion through one transform; never left/top
+  e.style.transform = `translate(${x}px,${y}px) rotate(${r}deg) scale(${s})`;
+  e.style.opacity = o;
+};
+
+/* ---------- data: specific, consistent, believable ---------- */
+const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"];
+const TODAY = 2;
+const TASKS = [
+  ["Read ch. 4", 0], ["Lab report", 1], ["Quiz 3 review", 1], ["Essay outline", 2], ["Problem set 6", 2],
+  ["Office hours", 2], ["Essay draft", 3], ["Group meeting", 3], ["Quiz 3", 4], ["Submit essay", 4],
+];
+
+/* ---------- build the cast once ---------- */
+const world = document.getElementById("world");
+const R = rand(7);
+const COLW = 300, GX = (1920 - COLW * 5 + 20) / 2, GY = 330, ROWH = 88;
+const perDay = [0, 0, 0, 0, 0];
+const chips = TASKS.map(([label, day], i) => {
+  const e = el("chip", `<i></i>${label}`, world);
+  const row = perDay[day]++;
+  return {
+    e, dot: e.firstChild, day,
+    gx: GX + day * COLW, gy: GY + row * ROWH,                         // grid slot
+    sx: 180 + R() * 1380, sy: 120 + R() * 640, sr: (R() - 0.5) * 16,  // scattered "everything at once"
+    enter: 0.05 * i,
+  };
+});
+const days = DAYS.map((d, i) => el("day", d.toUpperCase(), world));
+const hook = el("mask", "", document.getElementById("stage"));
+const hookLine = el("line", "Everything, all at once.", hook);
+const todayMask = el("mask", "", document.getElementById("stage"));
+const todayLine = el("line", "Today is just this.", todayMask);
+const markBars = [0, 1, 2].map(() => el("bar", "", document.getElementById("stage")));
+const wordMask = el("mask", "", document.getElementById("stage"));
+const word = el("line", "educationplanner", wordMask);
+word.style.fontSize = "112px";
+const sub = el("line", "Your week, planned.", document.getElementById("stage"));
+sub.style.fontSize = "44px"; sub.style.fontWeight = 500; sub.style.color = "var(--n1)"; sub.style.letterSpacing = "-0.02em";
+
+/* ---------- the film: pure function of t ---------- */
+window.seek = function (t) {
+  // Camera: gentle drift over the hook, push into today's column for the proof, pull out for the lockup.
+  const push = prog(t, 3.9, 5.2, E.cam), pull = prog(t, 5.7, 6.5, E.inOut);
+  const zoom = lmix(1.04, 1.0, prog(t, 0, 2.2, E.cam)) * lmix(1, 1.42, push * (1 - pull));
+  const fx = GX + TODAY * COLW + 140, fy = 520;                       // focus point: today's column
+  const cx = mix(960, fx, push * (1 - pull)), cy = mix(540, fy, push * (1 - pull));
+  world.style.transform = `translate(${960 - cx * zoom}px,${540 - cy * zoom}px) scale(${zoom})`;
+
+  const sort = (c) => prog(t, 1.85 + c.day * 0.07, 2.85 + c.day * 0.07, E.glide);   // chips glide into the grid
+  const collapse = prog(t, 5.7, 6.35, E.inOut);                                       // the device becomes the mark
+  const creep = lmix(1, 1.04, prog(t, 6.7, 8, E.smooth));
+  const lx = 960 - 520 * creep, ly = 500;                                             // lockup anchor
+
+  chips.forEach((c, i) => {
+    const a = prog(t, c.enter, c.enter + 0.55, E.out);
+    const s = sort(c);
+    const bar = c.day === TODAY ? 1 : i % 2 ? 0 : 2;                                  // today's chips feed the accent bar
+    const x = mix(mix(c.sx, c.gx, s), lx, collapse);
+    const y = mix(mix(c.sy + (1 - a) * 60, c.gy, s), ly + bar * 34, collapse);
+    const isToday = c.day === TODAY;
+    const focus = prog(t, 3.3, 3.8, E.smooth);
+    const o = a * (isToday ? 1 : mix(1, 0.32, focus)) * (1 - clamp((collapse - 0.55) / 0.45));
+    put(c.e, x, y, mix(0.94, 1, a) * mix(1, 0.32, collapse), mix(c.sr, 0, s), o);
+    c.dot.style.background = isToday && focus > 0.5 ? "var(--accent)" : "var(--n1)";
+  });
+  days.forEach((d, i) => put(d, GX + i * COLW + 4, GY - 56, 1, 0,
+    prog(t, 2.5 + i * 0.05, 2.9 + i * 0.05, E.smooth) * (1 - collapse) * (i === TODAY ? 1 : mix(1, 0.4, prog(t, 3.3, 3.8)))));
+  days[TODAY].style.color = t > 3.5 ? "var(--accent)" : "var(--n1)";
+
+  // Copy: one line at a time, anchored to the lower third, rises through a mask, lands sharp.
+  const line = (m, l, x, y, inA, outA) => {
+    const i = prog(t, inA, inA + 0.5, E.out), o = prog(t, outA, outA + 0.35, E.exit);
+    m.style.transform = `translate(${x}px,${y}px)`; m.style.width = "1800px"; m.style.height = "120px";
+    put(l, 0, mix(110, 0, i) - o * 110, 1, 0, 1);
+  };
+  line(hook, hookLine, 160, 860, 0.35, 1.75);
+  line(todayMask, todayLine, 160, 860, 4.35, 5.6);
+
+  // Lockup: three bars (the stacked week, today in accent) then the wordmark rises beside them.
+  markBars.forEach((b, i) => {
+    const w = [96, 132, 72][i];
+    b.style.width = w + "px";
+    b.style.background = i === 1 ? "var(--accent)" : "var(--paper)";
+    const bi = prog(t, 6.05 + i * 0.05, 6.4 + i * 0.05, E.out);                      // bars resolve as chips arrive
+    put(b, lx, ly + i * 34 * creep, mix(0.8, 1, bi) * creep, 0, bi);
+  });
+  wordMask.style.transform = `translate(${lx + 170 * creep}px,${ly - 22}px)`;
+  wordMask.style.width = "1400px"; wordMask.style.height = "140px";
+  put(word, 0, mix(130, 0, prog(t, 6.3, 6.95, E.out)), creep, 0, 1);
+  put(sub, lx + 172 * creep, ly + 130, creep, 0, prog(t, 6.9, 7.4, E.smooth));
+};
+
+/* ---------- preview player (not used by the renderer) ---------- */
+const q = new URLSearchParams(location.search);
+if (q.has("t")) seek(Number(q.get("t")));
+else if (!navigator.webdriver) {
+  const t0 = performance.now();
+  const loop = () => { seek(((performance.now() - t0) / 1000) % FILM.duration); requestAnimationFrame(loop); };
+  requestAnimationFrame(loop);
+} else seek(0);
+</script>
+</body>
+</html>
